@@ -17,6 +17,7 @@ Usage:
 
 import argparse
 import logging
+import os
 import signal
 import sys
 import time
@@ -25,6 +26,9 @@ from datetime import datetime
 import pytz
 
 import config
+
+os.makedirs("logs", exist_ok=True)
+os.makedirs("data", exist_ok=True)
 from bot.data_fetcher import DataFetcher
 from bot.paper_trader import PaperTrader
 from bot.strategy import StrategyEngine

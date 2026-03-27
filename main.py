@@ -77,18 +77,25 @@ class TradingBot:
         self.data_fetcher.refresh_all()
 
         cycle = 0
+        market_closed_logged = False
         while self.running:
             try:
                 now = datetime.now(EST)
 
                 # Check if market is open (weekday, 9:30-16:00 EST)
                 if not self._is_market_hours(now):
-                    if cycle == 0:
-                        logger.info("Market closed. Waiting for market hours (9:30-16:00 EST, Mon-Fri)...")
+                    if not market_closed_logged:
+                        next_open = self._next_market_open(now)
+                        logger.info("Market closed. Next open: %s EST", next_open.strftime("%a %b %d %H:%M"))
                         self._print_status()
-                    time.sleep(60)
-                    cycle += 1
+                        market_closed_logged = True
+                    time.sleep(300)  # Check every 5 min when market is closed
                     continue
+
+                # Market is open
+                if market_closed_logged:
+                    logger.info("Market is OPEN. Starting to scan for signals...")
+                    market_closed_logged = False
 
                 # Refresh data periodically
                 if self.data_fetcher.needs_refresh():
@@ -219,6 +226,19 @@ class TradingBot:
         market_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
         market_close = now.replace(hour=16, minute=0, second=0, microsecond=0)
         return market_open <= now <= market_close
+
+    @staticmethod
+    def _next_market_open(now: datetime) -> datetime:
+        """Calculate when the market next opens."""
+        from datetime import timedelta
+        next_day = now
+        while True:
+            if next_day.date() == now.date() and now.hour < 9:
+                # Today before open
+                return next_day.replace(hour=9, minute=30, second=0, microsecond=0)
+            next_day = (next_day + timedelta(days=1)).replace(hour=9, minute=30, second=0, microsecond=0)
+            if next_day.weekday() < 5:  # Mon-Fri
+                return next_day
 
     def _shutdown(self, *args):
         """Graceful shutdown."""

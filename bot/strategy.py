@@ -71,7 +71,7 @@ class StrategyEngine:
         # ── 1. Detect S/R zones on 15m ──
         zones = detect_sr_zones(df_15m)
         if not zones:
-            logger.debug("[%s] No S/R zones found", symbol)
+            logger.info("[%s] ✗ Step 1 FAIL: No S/R zones found", symbol)
             return None
 
         # Check if price is near a support zone (for longs) or resistance (for shorts)
@@ -79,51 +79,54 @@ class StrategyEngine:
         resistance_zone = price_in_sr_zone(current_price, zones, "resistance")
 
         if not support_zone and not resistance_zone:
-            logger.debug("[%s] Price %.2f not in any S/R zone", symbol, current_price)
+            nearest = min(zones, key=lambda z: abs(z.price - current_price))
+            logger.info("[%s] ✗ Step 1 FAIL: Price %.2f not in S/R zone (nearest: %.2f, %.1f%% away)",
+                        symbol, current_price, nearest.price,
+                        abs(current_price - nearest.price) / current_price * 100)
             return None
 
         # Determine trade direction based on which zone price is in
         if support_zone:
             trade_dir = Direction.LONG
             active_zone = support_zone
-            logger.info("[%s] ✓ Price in SUPPORT zone [%.2f - %.2f]",
-                        symbol, active_zone.lower, active_zone.upper)
+            logger.info("[%s] ✓ Step 1 PASS: Price %.2f in SUPPORT zone [%.2f - %.2f]",
+                        symbol, current_price, active_zone.lower, active_zone.upper)
         else:
             trade_dir = Direction.SHORT
             active_zone = resistance_zone
-            logger.info("[%s] ✓ Price in RESISTANCE zone [%.2f - %.2f]",
-                        symbol, active_zone.lower, active_zone.upper)
+            logger.info("[%s] ✓ Step 1 PASS: Price %.2f in RESISTANCE zone [%.2f - %.2f]",
+                        symbol, current_price, active_zone.lower, active_zone.upper)
 
         # ── 2. Detect unhealthy move ──
         unhealthy = detect_unhealthy_move(df_1m)
         if unhealthy is None:
-            logger.debug("[%s] No unhealthy move detected", symbol)
+            logger.info("[%s] ✗ Step 2 FAIL: No unhealthy move detected", symbol)
             return None
 
         # Unhealthy move should be opposite to our trade direction
         if trade_dir == Direction.LONG and unhealthy.direction != Direction.SHORT:
-            logger.debug("[%s] Unhealthy move is bullish, need bearish for long entry", symbol)
+            logger.info("[%s] ✗ Step 2 FAIL: Unhealthy move is bullish, need bearish for long", symbol)
             return None
         if trade_dir == Direction.SHORT and unhealthy.direction != Direction.LONG:
-            logger.debug("[%s] Unhealthy move is bearish, need bullish for short entry", symbol)
+            logger.info("[%s] ✗ Step 2 FAIL: Unhealthy move is bearish, need bullish for short", symbol)
             return None
 
-        logger.info("[%s] ✓ Unhealthy %s move: %d candles, %.2f%%",
+        logger.info("[%s] ✓ Step 2 PASS: Unhealthy %s move: %d candles, %.2f%%",
                     symbol, unhealthy.direction.value,
                     unhealthy.candle_count, unhealthy.magnitude_pct)
 
         # ── 3. Check trend break ──
         trend_broken = detect_trend_break(df_1m, trade_dir)
         if not trend_broken:
-            logger.debug("[%s] Trend not broken yet", symbol)
+            logger.info("[%s] ✗ Step 3 FAIL: Trend not broken yet", symbol)
             return None
 
-        logger.info("[%s] ✓ Trend break confirmed for %s", symbol, trade_dir.value)
+        logger.info("[%s] ✓ Step 3 PASS: Trend break confirmed for %s", symbol, trade_dir.value)
 
         # ── 4. Detect reversal pattern ──
         pattern_result = detect_reversal_pattern(df_1m, trade_dir)
         if pattern_result is None:
-            logger.debug("[%s] No reversal pattern found", symbol)
+            logger.info("[%s] ✗ Step 4 FAIL: No reversal pattern found", symbol)
             return None
 
         pattern_name, entry_price, stop_loss = pattern_result

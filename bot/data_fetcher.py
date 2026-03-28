@@ -4,6 +4,7 @@ Provides real-time and historical OHLCV data for paper trading.
 """
 
 import logging
+import time
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -25,17 +26,34 @@ class DataFetcher:
         self._cache_15m: dict[str, pd.DataFrame] = {}
         self._cache_1m: dict[str, pd.DataFrame] = {}
         self._last_refresh: Optional[datetime] = None
+        self._consecutive_errors = 0
+
+    def _fetch_with_retry(self, symbol: str, period: str, interval: str) -> pd.DataFrame:
+        """Fetch data with retry and error handling for yfinance rate limits."""
+        for attempt in range(3):
+            try:
+                ticker = yf.Ticker(symbol)
+                df = ticker.history(period=period, interval=interval)
+                self._consecutive_errors = 0
+                return df
+            except Exception as e:
+                wait = 2 ** (attempt + 1)
+                logger.warning("yfinance error for %s (%s): %s. Retry in %ds...",
+                               symbol, interval, str(e)[:80], wait)
+                time.sleep(wait)
+        # All retries failed — return cached data if available
+        logger.error("Failed to fetch %s %s after 3 retries", symbol, interval)
+        self._consecutive_errors += 1
+        return pd.DataFrame()
 
     def fetch_15m(self, symbol: str) -> pd.DataFrame:
         """Fetch 15-minute candles for S/R zone analysis."""
-        ticker = yf.Ticker(symbol)
-        df = ticker.history(
-            period=f"{config.DATA_HISTORY_DAYS_15M}d",
-            interval="15m",
-        )
+        df = self._fetch_with_retry(symbol, f"{config.DATA_HISTORY_DAYS_15M}d", "15m")
         if df.empty:
-            logger.warning("No 15m data for %s", symbol)
-            return pd.DataFrame()
+            cached = self._cache_15m.get(symbol, pd.DataFrame())
+            if not cached.empty:
+                logger.info("Using cached 15m data for %s (%d bars)", symbol, len(cached))
+            return cached
 
         df = self._normalize(df)
         self._cache_15m[symbol] = df
@@ -44,14 +62,12 @@ class DataFetcher:
 
     def fetch_1m(self, symbol: str) -> pd.DataFrame:
         """Fetch 1-minute candles for entry signal analysis."""
-        ticker = yf.Ticker(symbol)
-        df = ticker.history(
-            period=f"{config.DATA_HISTORY_DAYS_1M}d",
-            interval="1m",
-        )
+        df = self._fetch_with_retry(symbol, f"{config.DATA_HISTORY_DAYS_1M}d", "1m")
         if df.empty:
-            logger.warning("No 1m data for %s", symbol)
-            return pd.DataFrame()
+            cached = self._cache_1m.get(symbol, pd.DataFrame())
+            if not cached.empty:
+                logger.info("Using cached 1m data for %s (%d bars)", symbol, len(cached))
+            return cached
 
         df = self._normalize(df)
         self._cache_1m[symbol] = df
@@ -84,11 +100,19 @@ class DataFetcher:
 
     def refresh_all(self) -> dict[str, dict[str, pd.DataFrame]]:
         """Refresh data for all configured symbols."""
+        # Back off if we've had many consecutive errors (rate limited)
+        if self._consecutive_errors >= 5:
+            backoff = min(300, 30 * self._consecutive_errors)
+            logger.warning("Too many API errors (%d). Backing off %ds...",
+                           self._consecutive_errors, backoff)
+            time.sleep(backoff)
+
         result = {}
         for symbol in config.SYMBOLS:
             df_15m = self.fetch_15m(symbol)
             df_1m = self.fetch_1m(symbol)
             result[symbol] = {"15m": df_15m, "1m": df_1m}
+            time.sleep(0.5)  # Small delay between symbols to avoid rate limit
         self._last_refresh = datetime.now(EST)
         return result
 
